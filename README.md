@@ -17,9 +17,12 @@
 - 内容详情：视频/音频播放器、文本内容渲染
 - 上传：按类型约束文件格式与大小（视频 ≤200MB、音频 ≤50MB、文本 ≤50KB）
 - 点赞：乐观更新 + 服务端权威计数；按设备 `localStorage` 记录是否已赞，防止同一浏览器重复点赞
-- **首页全屏轮播首屏**：自动循环、平滑淡入、左右箭头 + 指示点 + 进度条 + 键盘控制
+- **首页全屏轮播首屏**：自动循环、平滑淡入、左右箭头 + 指示点 + 进度条 + 键盘控制；标题层叠覆盖于主视觉照片之上，双层渐变遮罩保证可读，响应式字号
 - **首屏照片可本地上传替换**：后台 `/manage/hero` 按位置（共 3 个）单独上传本地图片替换首屏，支持 JPG/PNG/GIF/WebP/SVG（≤10MB）
 - **已发布内容可删除**：列表卡片与详情页均提供删除按钮（二次确认），删除后同步移除磁盘媒体文件
+- **账户系统**：注册 / 登录（scrypt + HMAC 签名 httpOnly Cookie）；导航栏展示用户头像
+- **用户头像**：默认首字母渐变占位，点击头像即可从**相册或相机**选择新照片上传替换（iOS 风格 action-sheet + cross-fade 渐变切换，尊重 `prefers-reduced-motion`）
+- **全新页面转场**：基于路由变化的淡入 + 位移 + 微缩放过渡（iOS 风格缓动 `cubic-bezier(.22,1,.36,1)`，0.38s），替换原 jelly 幕布方案，应用于所有路由切换
 - 响应式：桌面多列瀑布流、移动端单列；交互元素含悬停/焦点态与点赞动画
 
 > 上传机制说明：文件通过浏览器读取为 base64 后以 JSON 提交（`{type,title,text?,file:{data,mime}}`），
@@ -36,6 +39,23 @@ npm run build && npm run start
 ```
 
 首次启动会自动创建 `data/` 目录、数据库与上传目录。
+
+## 账户与权限
+
+- **注册 / 登录**：访问 `/login` 可注册新账户或登录；密码经 scrypt 哈希 + HMAC 签名写入 httpOnly Cookie。
+- **管理员账号（预置）**：
+  - 用户名 `888`，密码 `88888888`
+  - 拥有最高权限：可编辑 / 删除**任何人**的内容，并可进入 `/manage/hero` 管理首页首屏轮播照片。
+  - 普通登录用户仅能编辑 / 删除**自己**发布的内容。
+- **用户头像**：登录后点击导航栏右上角头像 → 从相册选择或拍照 → 上传替换（iOS 风格渐变过渡）。
+  - 头像文件保存在 `data/avatars/`，数据库 `users.avatar` 记录文件名；接口 `POST /api/auth/avatar` 与 `GET /api/file/avatar/[name]`。
+
+```bash
+# 登录后访问这些页面
+/login      # 注册 / 登录
+/me         # 我的（资料 / 头像）
+/manage/hero # 管理首屏轮播（仅管理员）
+```
 
 ## 部署（生产模式，已配置）
 
@@ -74,8 +94,14 @@ app/
   api/hero/route.ts        GET 当前首屏轮播配置
   api/hero/upload/route.ts POST 按 slot 上传替换首屏照片（JSON + base64）
   api/hero/[id]/route.ts   GET 首屏照片（支持 Range）
-components/                SiteHeader / ContentFeed / ContentCard / TypeTabs / LikeButton / MediaPlayer / UploadForm / TypeIcon / HeroCarousel / HeroManager / DeleteButton / ConfirmDialog
-lib/                       db.ts / validation.ts / upload.ts / hero.ts / types.ts / format.ts
+  api/auth/login/route.ts          POST 登录
+  api/auth/register/route.ts       POST 注册
+  api/auth/logout/route.ts         POST 退出
+  api/auth/me/route.ts             GET 当前用户（含 avatarUrl）
+  api/auth/avatar/route.ts         POST 上传替换头像（JSON + base64）
+  api/file/avatar/[name]/route.ts  GET 头像文件（支持 Range）
+  components/                SiteHeader / ContentFeed / ContentCard / TypeTabs / LikeButton / MediaPlayer / UploadForm / TypeIcon / HeroCarousel / HeroManager / DeleteButton / ConfirmDialog / AuthProvider / Avatar / AvatarUploader / PageTransition
+lib/                       db.ts / validation.ts / upload.ts / hero.ts / types.ts / format.ts / auth.ts
 ```
 
 ## 接口速查
@@ -91,10 +117,17 @@ lib/                       db.ts / validation.ts / upload.ts / hero.ts / types.t
 | GET | `/api/hero` | 当前首屏轮播配置 → `{slides:[{id,slot,title,subtitle,url}]}` |
 | POST | `/api/hero/upload` | 按 `slot` 上传替换首屏照片（`slot,title,subtitle,file:{data,mime}`） |
 | GET | `/api/hero/[id]` | 首屏照片流（支持 `Range`） |
+| POST | `/api/auth/register` | 注册 `{username,password}` → `{user}` |
+| POST | `/api/auth/login` | 登录 `{username,password}` → 设置 Cookie |
+| POST | `/api/auth/logout` | 退出（清除 Cookie） |
+| GET | `/api/auth/me` | 当前用户 `{user:{username,role,avatarUrl}}` |
+| POST | `/api/auth/avatar` | 上传替换头像 `{data,mime}` → `{avatarUrl}` |
+| GET | `/api/file/avatar/[name]` | 头像文件流（支持 `Range`） |
 
 ## 后台入口
 
-- **管理首屏轮播**：`/manage/hero` —— 按位置上传本地图片替换首页第一屏照片（顶部导航「管理首屏」可直达）。
+- **账户**：`/login` 注册 / 登录；`/me` 查看资料与更换头像（点击导航栏头像亦可）。
+- **管理首屏轮播**：`/manage/hero` —— 按位置上传本地图片替换首页第一屏照片（仅管理员，顶部导航「管理首屏」可直达）。
 - 删除内容：列表卡片右上角图标按钮，或详情页底部「删除内容」按钮，均带二次确认弹窗。
 
 ## 说明与取舍
