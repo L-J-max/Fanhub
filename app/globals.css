@@ -1,0 +1,127 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  /* Smooth anchor jumps without hijacking the wheel — native momentum
+     scrolling provides the inertia for any long-page scrolling. */
+  scroll-behavior: smooth;
+  /* Custom easing curve for route transitions — iOS-style "ease-out expo":
+     starts at speed and decelerates into place. Smooth, never jarring. */
+  --ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ---------------------------------------------------------------------------
+   Universal route transition (replaces the old jelly curtain).
+   Each page mounts inside `.route-enter`, which plays a gentle
+   fade + slide-up + subtle zoom on entrance. Keyed on pathname so it replays
+   on every navigation. GPU-promoted (will-change) to stay silky.
+   --------------------------------------------------------------------------- */
+@keyframes route-in {
+  0% {
+    opacity: 0;
+    transform: translateY(16px) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.route-enter {
+  will-change: opacity, transform;
+  animation: route-in 0.38s var(--ease-soft) both;
+}
+
+/* Reduced-motion: drop the movement, keep a soft fade only. */
+@media (prefers-reduced-motion: reduce) {
+  .route-enter {
+    animation: route-in 0.18s ease both;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Avatar cross-fade layers (iOS-style image swap).
+   The HIG calls for ease-OUT when an element ENTERS and ease-IN when it
+   EXITS, so the new photo eases into place while the old one eases away.
+   Duration ~0.28s sits inside the 150–300ms micro-interaction window.
+   --------------------------------------------------------------------------- */
+.avatar-layer {
+  transition: opacity 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .avatar-layer {
+    transition: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   iOS action-sheet presentation (avatar picker).
+   The sheet rises from the bottom with a gentle ease-out + slight scale, while
+   the dimmed backdrop fades in. These are one-shot entrance animations that
+   play when the sheet mounts. Matches iOS spring-less "ease-out expo" feel.
+   --------------------------------------------------------------------------- */
+@keyframes ios-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes ios-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.ios-fade {
+  animation: ios-fade-in 0.2s var(--ease-soft) both;
+}
+
+.ios-sheet {
+  animation: ios-sheet-in 0.32s var(--ease-soft) both;
+  transform-origin: bottom center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ios-fade,
+  .ios-sheet {
+    animation: none;
+  }
+}
+
+body {
+  @apply bg-surface-muted text-ink antialiased;
+  font-family: var(--font-sans);
+}
+
+/* Visible focus ring for keyboard navigation */
+:focus-visible {
+  outline: 2px solid theme('colors.brand.DEFAULT');
+  outline-offset: 2px;
+}
+
+/* Respect reduced motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
