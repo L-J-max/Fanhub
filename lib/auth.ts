@@ -1,11 +1,10 @@
 import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
-import { DATA_DIR, AVATAR_DIR, getDb } from './db';
+import { getDb } from './db';
 import { cookies } from 'next/headers';
 import type { NextRequest, NextResponse } from 'next/server';
+import { nanoid } from 'nanoid';
+import { saveBlob, deleteBlobByUrl } from './upload';
 
-const SECRET_PATH = path.join(DATA_DIR, '.secret');
 const COOKIE_NAME = 'fanhub_session';
 const SESSION_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
@@ -25,25 +24,16 @@ export function isAdmin(user: SessionUser | null): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Session signing secret — generated once and persisted next to the database.
+// Session signing secret. On Vercel there is no writable local filesystem, so
+// we derive a stable secret from an env var when present, falling back to an
+// in-memory secret (rotated per deployment). For durable sessions across
+// serverless instances set SESSION_SECRET in the project env.
 // ---------------------------------------------------------------------------
+let memoSecret: string | null = null;
 function getSecret(): string {
-  try {
-    if (fs.existsSync(SECRET_PATH)) {
-      const s = fs.readFileSync(SECRET_PATH, 'utf8').trim();
-      if (s) return s;
-    }
-  } catch {
-    /* fall through to (re)create */
-  }
-  const secret = crypto.randomBytes(32).toString('hex');
-  try {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(SECRET_PATH, secret, { mode: 0o600 });
-  } catch {
-    /* non-fatal: a fresh secret is used for this process only */
-  }
-  return secret;
+  if (process.env.SESSION_SECRET) return process.env.SESSION_SECRET;
+  if (!memoSecret) memoSecret = crypto.randomBytes(32).toString('hex');
+  return memoSecret;
 }
 
 // ---------------------------------------------------------------------------
@@ -68,7 +58,6 @@ export function verifyPassword(password: string, stored: string): boolean {
 // ---------------------------------------------------------------------------
 // Signed session token: base64url(payload).hmac
 //   payload = `${username}.${expiryEpochMs}`
-// Verifying checks the HMAC and expiry, returning the username or null.
 // ---------------------------------------------------------------------------
 function sign(data: string): string {
   return crypto.createHmac('sha256', getSecret()).update(data).digest('base64url');
@@ -87,7 +76,6 @@ export function verifySessionToken(token: string | undefined | null): string | n
   const b64 = token.slice(0, dot);
   const sig = token.slice(dot + 1);
   const expected = sign(b64);
-  // constant-time compare
   const a = Buffer.from(sig);
   const b = Buffer.from(expected);
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
@@ -126,33 +114,43 @@ export function clearSession(res: NextResponse): void {
 
 /**
  * Ensures the built-in administrator account exists. Safe to call on every
- * boot — it only inserts when the row is absent. The password is fixed and
- * cannot be changed through the UI (admin-only setup).
+ * boot — it only inserts when the row is absent.
  */
-export function ensureAdmin(): void {
+export async function ensureAdmin(): Promise<void> {
   try {
     const db = getDb();
-    const existing = db
-      .prepare('SELECT username FROM users WHERE username = ?')
-      .get(ADMIN_USERNAME) as { username: string } | undefined;
-    if (existing) return;
-    db.prepare(
-      "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, datetime('now'))"
-    ).run(ADMIN_USERNAME, hashPassword(ADMIN_PASSWORD), ADMIN_ROLE);
+    const existing = await db.execute({
+      sql: 'SELECT username FROM users WHERE username = ?',
+      args: [ADMIN_USERNAME],
+    });
+    if ((existing.rows as unknown as { username: string }[]).length > 0) return;
+    await db.execute({
+      sql: "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, datetime('now'))",
+      args: [ADMIN_USERNAME, hashPassword(ADMIN_PASSWORD), ADMIN_ROLE],
+    });
   } catch {
     /* best-effort; the server still runs if seeding fails */
   }
 }
 
-function lookupUser(username: string | null): SessionUser | null {
+// Turso/libsql returns rows; helper to fetch a single object row.
+type Row = Record<string, unknown>;
+function firstRow(result: { rows: unknown }): Row | undefined {
+  const rows = result.rows as Row[];
+  return rows && rows.length ? rows[0] : undefined;
+}
+
+async function lookupUser(username: string | null): Promise<SessionUser | null> {
   if (!username) return null;
   try {
     const db = getDb();
-    const row = db
-      .prepare('SELECT username, role FROM users WHERE username = ?')
-      .get(username) as { username: string; role: string } | undefined;
+    const result = await db.execute({
+      sql: 'SELECT username, role FROM users WHERE username = ?',
+      args: [username],
+    });
+    const row = firstRow(result);
     if (!row) return null;
-    return { username: row.username, role: row.role || USER_ROLE };
+    return { username: String(row.username), role: String(row.role || USER_ROLE) };
   } catch {
     return null;
   }
@@ -174,9 +172,8 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
 export const SESSION_COOKIE = COOKIE_NAME;
 
 // ---------------------------------------------------------------------------
-// Avatar persistence — uploaded avatars live in DATA_DIR/avatars, keyed by a
-// random id + extension. The DB stores only the stored filename; the UI gets a
-// URL (/api/file/avatar/<name>). Old avatars are deleted when replaced.
+// Avatar persistence — avatars are uploaded to Vercel Blob; the DB stores the
+// public URL directly. Old avatars are deleted from Blob when replaced.
 // ---------------------------------------------------------------------------
 export const ALLOWED_AVATAR_MIME: Record<string, string> = {
   'image/jpeg': 'jpg',
@@ -186,25 +183,18 @@ export const ALLOWED_AVATAR_MIME: Record<string, string> = {
 };
 export const MAX_AVATAR_SIZE = 5 * 1024 * 1024; // 5 MB
 
-/** Writes avatar bytes and returns the stored filename, or null on rejection. */
-export function saveAvatar(id: string, ext: string, data: Uint8Array): string {
-  fs.mkdirSync(AVATAR_DIR, { recursive: true });
-  const name = `${id}.${ext}`;
-  fs.writeFileSync(path.join(AVATAR_DIR, name), data);
-  return name;
+/** Uploads avatar bytes to Blob, returns the public URL. */
+export async function saveAvatar(
+  data: Uint8Array,
+  ext: string
+): Promise<string> {
+  const id = nanoid();
+  return saveBlob(`avatars/${id}.${ext}`, data, `image/${ext}`);
 }
 
-/** Resolves an avatar filename to an absolute path, guarding path traversal. */
-export function resolveAvatarPath(name: string): string | null {
-  const base = path.resolve(AVATAR_DIR);
-  const resolved = path.resolve(AVATAR_DIR, name);
-  if (resolved !== base && !resolved.startsWith(base + path.sep)) return null;
-  return resolved;
+/** Builds the public URL for an avatar (now just the stored URL, null-safe). */
+export function avatarUrl(url: string | null): string | null {
+  return url || null;
 }
 
-/** Builds the public URL for a stored avatar filename (null-safe). */
-export function avatarUrl(name: string | null): string | null {
-  return name ? `/api/file/avatar/${name}` : null;
-}
-
-export const AVATAR_FILE_PREFIX = '/api/file/avatar/';
+export const AVATAR_FILE_PREFIX = '';

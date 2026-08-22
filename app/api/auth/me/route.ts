@@ -10,10 +10,12 @@ export async function GET(req: NextRequest) {
   if (!user) {
     return NextResponse.json({ user: null });
   }
-  // Pull the stored avatar filename to build a public URL.
-  const row = getDb()
-    .prepare('SELECT avatar FROM users WHERE username = ?')
-    .get(user.username) as { avatar: string | null } | undefined;
+  // Pull the stored avatar URL (now a full Blob URL).
+  const rowResult = await getDb().execute({
+    sql: 'SELECT avatar FROM users WHERE username = ?',
+    args: [user.username],
+  });
+  const row = (rowResult.rows as unknown as { avatar: string | null }[])[0];
   return NextResponse.json({
     user: {
       username: user.username,

@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import fs from 'node:fs/promises';
 import { getDb } from '@/lib/db';
-import { resolveUploadPath } from '@/lib/upload';
+import { deleteBlobByUrl } from '@/lib/upload';
 import { getUserFromRequest, isAdmin } from '@/lib/auth';
 import { isValidTitle } from '@/lib/validation';
 import type { ApiContentDetail, ContentItem } from '@/lib/types';
@@ -14,9 +13,11 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const row = getDb().prepare('SELECT * FROM content WHERE id = ?').get(id) as
-    | unknown as ContentItem
-    | undefined;
+  const result = await getDb().execute({
+    sql: 'SELECT * FROM content WHERE id = ?',
+    args: [id],
+  });
+  const row = (result.rows as unknown as ContentItem[])[0];
 
   if (!row) {
     return NextResponse.json({ error: '内容不存在' }, { status: 404 });
@@ -27,8 +28,7 @@ export async function GET(
     type: row.type,
     title: row.title,
     text_body: row.type === 'text' ? row.text_body : null,
-    fileUrl:
-      row.type !== 'text' && row.file_path ? `/api/file/${row.id}` : null,
+    fileUrl: row.type !== 'text' && row.file_path ? row.file_path : null,
     mime: row.mime,
     size: row.size,
     like_count: row.like_count,
@@ -45,9 +45,11 @@ export async function DELETE(
   const { id } = await params;
   const db = getDb();
 
-  const row = db
-    .prepare('SELECT file_path, user_id FROM content WHERE id = ?')
-    .get(id) as unknown as { file_path: string | null; user_id: string | null } | undefined;
+  const rowResult = await db.execute({
+    sql: 'SELECT file_path, user_id FROM content WHERE id = ?',
+    args: [id],
+  });
+  const row = (rowResult.rows as unknown as { file_path: string | null; user_id: string | null }[])[0];
 
   if (!row) {
     return NextResponse.json({ error: '内容不存在' }, { status: 404 });
@@ -61,18 +63,10 @@ export async function DELETE(
     return NextResponse.json({ error: '无权删除该内容' }, { status: 403 });
   }
 
-  if (row.file_path) {
-    const abs = resolveUploadPath(row.file_path);
-    if (abs) {
-      try {
-        await fs.unlink(abs);
-      } catch {
-        // file may already be missing; proceed to drop the row
-      }
-    }
-  }
+  // Remove the media from Blob storage (best-effort).
+  await deleteBlobByUrl(row.file_path);
 
-  db.prepare('DELETE FROM content WHERE id = ?').run(id);
+  await db.execute({ sql: 'DELETE FROM content WHERE id = ?', args: [id] });
   return NextResponse.json({ ok: true });
 }
 
@@ -83,9 +77,11 @@ export async function PATCH(
   const { id } = await params;
   const db = getDb();
 
-  const row = db
-    .prepare('SELECT id, user_id, type FROM content WHERE id = ?')
-    .get(id) as unknown as { id: string; user_id: string | null; type: string } | undefined;
+  const rowResult = await db.execute({
+    sql: 'SELECT id, user_id, type FROM content WHERE id = ?',
+    args: [id],
+  });
+  const row = (rowResult.rows as unknown as { id: string; user_id: string | null; type: string }[])[0];
 
   if (!row) {
     return NextResponse.json({ error: '内容不存在' }, { status: 404 });
@@ -115,17 +111,21 @@ export async function PATCH(
     row.type === 'text' && typeof body.text === 'string' ? body.text : undefined;
 
   if (text !== undefined) {
-    db.prepare('UPDATE content SET title = ?, text_body = ? WHERE id = ?').run(
-      title,
-      text,
-      id
-    );
+    await db.execute({
+      sql: 'UPDATE content SET title = ?, text_body = ? WHERE id = ?',
+      args: [title, text, id],
+    });
   } else {
-    db.prepare('UPDATE content SET title = ? WHERE id = ?').run(title, id);
+    await db.execute({
+      sql: 'UPDATE content SET title = ? WHERE id = ?',
+      args: [title, id],
+    });
   }
 
-  const updated = db
-    .prepare('SELECT title FROM content WHERE id = ?')
-    .get(id) as { title: string };
+  const updatedResult = await db.execute({
+    sql: 'SELECT title FROM content WHERE id = ?',
+    args: [id],
+  });
+  const updated = (updatedResult.rows as unknown as { title: string }[])[0];
   return NextResponse.json({ ok: true, id, title: updated.title });
 }

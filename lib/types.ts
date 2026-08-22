@@ -24,6 +24,8 @@ export interface ApiContent {
   size: number | null;
   like_count: number;
   created_at: string;
+  /** Direct public URL for media items (Blob URL); null for text. */
+  fileUrl?: string | null;
   /** Whether the current viewer owns this item (controls delete visibility). */
   mine?: boolean;
   /** Whether the current viewer has liked this item (logged-in only). */

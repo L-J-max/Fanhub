@@ -20,7 +20,8 @@ export default function ContentCard({
   const canManage = Boolean(item.mine) || (isAdmin && !!user);
 
   const isImage = item.type === 'image';
-  const thumbUrl = isImage && item.mime ? `/api/file/${item.id}` : null;
+  // fileUrl is the full Blob URL; fall back gracefully if absent.
+  const thumbUrl = isImage && item.fileUrl ? item.fileUrl : null;
 
   return (
     <article className="group relative flex flex-col rounded-2xl bg-surface border border-surface-border shadow-card hover:shadow-card-hover transition-shadow duration-200 overflow-hidden animate-fade-in">

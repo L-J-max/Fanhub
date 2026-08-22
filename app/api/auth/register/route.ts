@@ -33,16 +33,18 @@ export async function POST(req: NextRequest) {
   }
 
   const db = getDb();
-  const exists = db
-    .prepare('SELECT 1 FROM users WHERE username = ?')
-    .get(username);
-  if (exists) {
+  const existsResult = await db.execute({
+    sql: 'SELECT 1 FROM users WHERE username = ?',
+    args: [username],
+  });
+  if ((existsResult.rows as unknown[]).length > 0) {
     return NextResponse.json({ error: '该用户名已被注册' }, { status: 409 });
   }
 
-  db.prepare(
-    "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, 'user', datetime('now'))"
-  ).run(username, hashPassword(password));
+  await db.execute({
+    sql: "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, 'user', datetime('now'))",
+    args: [username, hashPassword(password)],
+  });
 
   const res = NextResponse.json(
     { ok: true, user: { username, role: 'user' } },

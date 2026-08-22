@@ -1,33 +1,48 @@
-import fs from 'node:fs/promises';
-import path from 'node:path';
-import { UPLOAD_DIR } from './db';
+import { put } from '@vercel/blob';
+import type { PutCommandOptions } from '@vercel/blob';
+
+// ---------------------------------------------------------------------------
+// File storage — Vercel Blob (replaces the old local-filesystem uploads).
+//
+// On Vercel, the serverless filesystem is read-only / ephemeral, so we cannot
+// persist uploaded media locally. Instead every upload is written to Vercel
+// Blob and we store the resulting **public URL** in the database (the
+// `file_path` column now holds a full https URL rather than a local name).
+//
+// Env (set in Vercel + locally):
+//   BLOB_READ_WRITE_TOKEN  from `vercel blob token` / project dashboard
+// ---------------------------------------------------------------------------
 
 /**
- * Persists an uploaded file to the uploads directory.
- * Accepts raw bytes (from a base64-decoded JSON payload) — never trusts a
- * user-supplied filename, preventing path traversal / spoofing.
- * Returns the relative stored name (e.g. "<id>.mp4").
+ * Uploads raw bytes to Vercel Blob and returns the public URL.
+ * `pathname` should be namespaced, e.g. `uploads/<id>.<ext>` or
+ * `avatars/<id>.<ext>` or `hero/<id>.<ext>`.
  */
-export async function saveUploadFile(
-  id: string,
-  ext: string,
-  data: Uint8Array
+export async function saveBlob(
+  pathname: string,
+  data: Uint8Array,
+  mime: string
 ): Promise<string> {
-  await fs.mkdir(UPLOAD_DIR, { recursive: true });
-  const storedName = `${id}.${ext}`;
-  await fs.writeFile(path.join(UPLOAD_DIR, storedName), data);
-  return storedName;
+  const opts: PutCommandOptions = {
+    access: 'public',
+    contentType: mime,
+    // Deterministic-ish name with allowed characters only (Blob is strict).
+    allowOverwrite: true,
+  };
+  const blob = await put(pathname, Buffer.from(data), opts);
+  return blob.url;
 }
 
 /**
- * Resolves a stored upload name to an absolute path, guarding against path
- * traversal. Returns null when the resolved path escapes UPLOAD_DIR.
+ * Deletes a previously stored Blob by its public URL. Best-effort: failures
+ * are swallowed because a missing remote object should not break a delete.
  */
-export function resolveUploadPath(storedName: string): string | null {
-  const base = path.resolve(UPLOAD_DIR);
-  const resolved = path.resolve(UPLOAD_DIR, storedName);
-  if (resolved !== base && !resolved.startsWith(base + path.sep)) {
-    return null;
+export async function deleteBlobByUrl(url: string | null): Promise<void> {
+  if (!url) return;
+  try {
+    const { del } = await import('@vercel/blob');
+    await del(url);
+  } catch {
+    /* remote object may already be gone; ignore */
   }
-  return resolved;
 }

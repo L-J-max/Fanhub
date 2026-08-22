@@ -13,9 +13,11 @@ export default async function EditContentPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const row = getDb().prepare('SELECT * FROM content WHERE id = ?').get(id) as
-    | unknown as ContentItem
-    | undefined;
+  const rowResult = await getDb().execute({
+    sql: 'SELECT * FROM content WHERE id = ?',
+    args: [id],
+  });
+  const row = (rowResult.rows as unknown as ContentItem[])[0];
 
   if (!row) notFound();
 

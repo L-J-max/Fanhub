@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   upsertHeroSlide,
+  getHeroImage,
   getHeroExtForMime,
   MAX_HERO_IMAGE_SIZE,
   HERO_SLOT_COUNT,
@@ -94,8 +95,9 @@ export async function POST(req: NextRequest) {
     mime: normalizedMime,
   });
 
+  const img = await getHeroImage(id);
   return NextResponse.json(
-    { id, slot, title, subtitle, url: `/api/hero/${id}` },
+    { id, slot, title, subtitle, url: img?.url ?? null },
     { status: 201 }
   );
 }

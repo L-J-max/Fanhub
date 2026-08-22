@@ -1,7 +1,6 @@
-import fs from 'node:fs/promises';
-import path from 'node:path';
 import { nanoid } from 'nanoid';
-import { getDb, HERO_DIR } from './db';
+import { getDb } from './db';
+import { saveBlob, deleteBlobByUrl } from './upload';
 
 /** Number of hero slots on the first screen. */
 export const HERO_SLOT_COUNT = 3;
@@ -31,23 +30,29 @@ export interface HeroSlide {
   url: string;
 }
 
-/** Returns hero slides ordered by slot. */
-export function getHeroSlides(): HeroSlide[] {
-  const rows = getDb()
-    .prepare('SELECT id, slot, title, subtitle FROM hero ORDER BY slot ASC')
-    .all() as unknown as { id: string; slot: number; title: string; subtitle: string }[];
-  return rows.map((r) => ({
-    id: r.id,
-    slot: r.slot,
-    title: r.title,
-    subtitle: r.subtitle,
-    url: `/api/hero/${r.id}`,
+// libsql returns rows as arrays of objects.
+type Row = Record<string, unknown>;
+function rows(r: { rows: unknown }): Row[] {
+  return (r.rows as Row[]) ?? [];
+}
+
+/** Returns hero slides ordered by slot. `url` is the public Blob URL. */
+export async function getHeroSlides(): Promise<HeroSlide[]> {
+  const result = await getDb().execute(
+    'SELECT id, slot, title, subtitle, file_path FROM hero ORDER BY slot ASC'
+  );
+  return rows(result).map((r) => ({
+    id: String(r.id),
+    slot: Number(r.slot),
+    title: String(r.title ?? ''),
+    subtitle: String(r.subtitle ?? ''),
+    url: String(r.file_path ?? ''), // now a full Blob URL
   }));
 }
 
 /**
- * Upserts a hero slide for the given slot. The previous image file for that
- * slot (if any) is removed from disk. Returns the new slide id.
+ * Upserts a hero slide for the given slot. The previous image (Blob URL) is
+ * removed from Blob storage. Returns the new slide id.
  */
 export async function upsertHeroSlide(params: {
   slot: number;
@@ -60,24 +65,18 @@ export async function upsertHeroSlide(params: {
   const { slot, title, subtitle, data, ext, mime } = params;
   const db = getDb();
 
-  const old = db
-    .prepare('SELECT file_path FROM hero WHERE slot = ?')
-    .get(slot) as unknown as { file_path: string } | undefined;
+  const old = firstRow(
+    await db.execute({ sql: 'SELECT file_path FROM hero WHERE slot = ?', args: [slot] })
+  );
   if (old?.file_path) {
-    try {
-      await fs.unlink(path.join(HERO_DIR, old.file_path));
-    } catch {
-      // previous file may already be gone; ignore
-    }
+    await deleteBlobByUrl(String(old.file_path));
   }
 
   const id = nanoid();
-  const storedName = `${id}.${ext}`;
-  await fs.mkdir(HERO_DIR, { recursive: true });
-  await fs.writeFile(path.join(HERO_DIR, storedName), data);
+  const url = await saveBlob(`hero/${id}.${ext}`, data, mime);
 
-  db.prepare(
-    `INSERT INTO hero (id, slot, title, subtitle, file_path, mime)
+  await db.execute({
+    sql: `INSERT INTO hero (id, slot, title, subtitle, file_path, mime)
      VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(slot) DO UPDATE SET
        id=excluded.id,
@@ -85,28 +84,24 @@ export async function upsertHeroSlide(params: {
        subtitle=excluded.subtitle,
        file_path=excluded.file_path,
        mime=excluded.mime,
-       created_at=datetime('now')`
-  ).run(id, slot, title.trim(), subtitle.trim(), storedName, mime);
+       created_at=datetime('now')`,
+    args: [id, slot, title.trim(), subtitle.trim(), url, mime],
+  });
 
   return id;
 }
 
-export function getHeroImage(
+export async function getHeroImage(
   id: string
-): { file_path: string; mime: string } | null {
-  const row = getDb()
-    .prepare('SELECT file_path, mime FROM hero WHERE id = ?')
-    .get(id) as unknown as { file_path: string; mime: string } | undefined;
+): Promise<{ url: string; mime: string } | null> {
+  const row = firstRow(
+    await getDb().execute({ sql: 'SELECT file_path, mime FROM hero WHERE id = ?', args: [id] })
+  );
   if (!row) return null;
-  return { file_path: row.file_path, mime: row.mime };
+  return { url: String(row.file_path), mime: String(row.mime) };
 }
 
-/** Resolves a stored hero name to an absolute path, guarding path traversal. */
-export function resolveHeroPath(storedName: string): string | null {
-  const base = path.resolve(HERO_DIR);
-  const resolved = path.resolve(HERO_DIR, storedName);
-  if (resolved !== base && !resolved.startsWith(base + path.sep)) {
-    return null;
-  }
-  return resolved;
+function firstRow(r: { rows: unknown }): Row | undefined {
+  const rs = r.rows as Row[];
+  return rs && rs.length ? rs[0] : undefined;
 }

@@ -57,26 +57,48 @@ npm run build && npm run start
 /manage/hero # 管理首屏轮播（仅管理员）
 ```
 
-## 部署（生产模式，已配置）
+## 部署到 Vercel（公网可访问）
 
-服务已以 **生产模式** 部署并常驻运行：
+本项目已适配 **Vercel + Turso + Vercel Blob**，因为 Vercel 的 Serverless 函数是无状态、文件系统只读的，原生的本地 SQLite 与本地文件上传无法持久化。适配方案：
 
-- 启动命令：`npm run start`（`next start -H 0.0.0.0`），监听 **http://localhost:3000**（同时绑定 `0.0.0.0`，同一局域网可通过本机 IP 访问）。
-- 守护：`deploy-start.sh` 在进程退出/崩溃后自动重启（3 秒间隔），保证稳定运行。
-- 开机自启：登录项 `Startup/FanHubSite.bat` → 调用 `deploy-start.bat`，用户登录后自动拉起服务（无需管理员权限）。
-- 运行日志：`deploy.log`。
+| 原方案 | Vercel 方案 |
+|---|---|
+| `node:sqlite` 本地库 | **Turso**（云版 SQLite，HTTP 访问，SQL 语法一致） |
+| 本地文件系统存媒体 | **Vercel Blob**（上传即返回公开 URL，DB 存 URL） |
 
-```bash
-# 手动启动守护（后台常驻）
-nohup bash deploy-start.sh > /dev/null 2>&1 &
+### 1. 准备外部服务（免费额度即可）
 
-# 手动停止
-# 结束 deploy-start.sh 及其拉起的 next 进程即可
+- **Turso 数据库**：https://turso.tech → 创建数据库 `fanhub` → `turso db tokens create fanhub` 拿到 `TURSO_DATABASE_URL` 与 `TURSO_AUTH_TOKEN`。
+- **Vercel Blob**：在 Vercel 项目 Dashboard → Storage → Create Blob Store，复制 `BLOB_READ_WRITE_TOKEN`。
+
+### 2. 配置环境变量（Vercel 项目 → Settings → Environment Variables）
+
+```
+TURSO_DATABASE_URL=libsql://<db>.turso.io
+TURSO_AUTH_TOKEN=<token>
+BLOB_READ_WRITE_TOKEN=<vercel-blob-token>
+SESSION_SECRET=<任意长随机串>   # 可选但推荐，保证重启后登录态不失效
 ```
 
-> 访问地址：**http://localhost:3000**（任何访客无需登录即可浏览与点赞）。
->
-> 说明：本环境内置的 CloudStudio 部署仅支持纯静态站点，无法托管带 API/数据库的 Next.js 全栈应用，因此采用本地生产部署方式提供可直接访问的端口 URL。如需公网域名访问，需另行接入支持 Node 服务的托管平台（如 CloudBase / 云服务器）。
+### 3. 部署
+
+```bash
+npm install
+vercel            # 按提示登录并部署（或连接 Git 仓库自动部署）
+# 或推送至已关联的 Git 仓库，Vercel 自动构建
+```
+
+- 构建命令：`next build`（默认）
+- 运行时：Node.js（`runtime = 'nodejs'`，已设置）
+- 首次启动会自动建表（users / content / hero / likes），并种子管理员账户 `888 / 88888888`
+
+> 说明：`.env.example` 列出了全部所需变量。本地开发可用 `TURSO_DATABASE_URL=file:./data/local.db` 用本地 libSQL 文件，无需联网数据库。
+
+### 本地生产预览
+
+```bash
+vercel build && vercel dev     # 或 npm run build && npm run start
+```
 
 ## 目录结构
 

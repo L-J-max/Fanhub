@@ -22,7 +22,7 @@ export async function GET(req: NextRequest) {
   const offset = Math.max(parseInt(searchParams.get('offset') || '0', 10) || 0, 0);
 
   const where: string[] = [];
-  const params: unknown[] = [SNIPPET_LENGTH];
+  const params: (string | number | null)[] = [SNIPPET_LENGTH];
 
   const meName = me?.username ?? null;
 
@@ -46,21 +46,49 @@ export async function GET(req: NextRequest) {
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
   const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT c.id, c.type, c.title,
+  const result = await db.execute({
+    sql: `SELECT c.id, c.type, c.title,
          CASE WHEN c.type='text' THEN substr(c.text_body,1,?) ELSE NULL END AS snippet,
-         c.mime, c.size, c.like_count, c.created_at,
+         c.mime, c.size, c.like_count, c.created_at, c.file_path,
          ${extraCols}
        FROM content c
        ${whereSql}
        ORDER BY c.created_at DESC
-       LIMIT ? OFFSET ?`
-    )
-    .all(...(params as []), limit, offset) as unknown as ApiContent[];
+       LIMIT ? OFFSET ?`,
+    args: [...params, limit, offset],
+  });
+
+  const rawRows = result.rows as unknown as {
+    id: string;
+    type: string;
+    title: string;
+    snippet: string | null;
+    mime: string | null;
+    size: number | null;
+    like_count: number;
+    created_at: string;
+    file_path: string | null;
+    mine?: number;
+    likedByMe?: number;
+  }[];
+
+  // Attach a direct Blob URL for media items (file_path now stores the URL).
+  const items: ApiContent[] = rawRows.map((r) => ({
+    id: r.id,
+    type: r.type as ApiContent['type'],
+    title: r.title,
+    snippet: r.snippet,
+    mime: r.mime,
+    size: r.size,
+    like_count: r.like_count,
+    created_at: r.created_at,
+    fileUrl: r.type !== 'text' && r.file_path ? r.file_path : null,
+    mine: !!r.mine,
+    likedByMe: !!r.likedByMe,
+  }));
 
   // Count uses the same filter (without the extra viewer columns).
-  const countParams: unknown[] = [];
+  const countParams: (string | number | null)[] = [];
   const countWhere: string[] = [];
   if (type) {
     countWhere.push('type = ?');
@@ -75,12 +103,14 @@ export async function GET(req: NextRequest) {
     countParams.push(likedBy);
   }
   const countWhereSql = countWhere.length ? `WHERE ${countWhere.join(' AND ')}` : '';
-  const countRow = db
-    .prepare(`SELECT COUNT(*) AS c FROM content ${countWhereSql}`)
-    .get(...(countParams as [])) as { c: number };
+  const countResult = await db.execute({
+    sql: `SELECT COUNT(*) AS c FROM content ${countWhereSql}`,
+    args: countParams,
+  });
+  const countRow = (countResult.rows as unknown as { c: number }[])[0];
 
-  const nextOffset = offset + limit < countRow.c ? offset + limit : null;
+  const nextOffset = offset + limit < (countRow?.c ?? 0) ? offset + limit : null;
 
-  const body: ContentListResponse = { items: rows, nextOffset };
+  const body: ContentListResponse = { items, nextOffset };
   return NextResponse.json(body);
 }

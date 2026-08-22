@@ -27,8 +27,11 @@ export async function POST(req: NextRequest) {
   const db = getDb();
 
   // Guard: content must exist.
-  const exists = db.prepare('SELECT 1 FROM content WHERE id = ?').get(id);
-  if (!exists) {
+  const existsResult = await db.execute({
+    sql: 'SELECT 1 FROM content WHERE id = ?',
+    args: [id],
+  });
+  if ((existsResult.rows as unknown[]).length === 0) {
     return NextResponse.json({ error: '内容不存在' }, { status: 404 });
   }
 
@@ -37,35 +40,50 @@ export async function POST(req: NextRequest) {
   if (user) {
     const uid = user.username;
     // Logged-in: dedupe via the likes table so each user counts once.
-    const already = db
-      .prepare('SELECT 1 FROM likes WHERE user_id = ? AND content_id = ?')
-      .get(uid, id);
+    const alreadyResult = await db.execute({
+      sql: 'SELECT 1 FROM likes WHERE user_id = ? AND content_id = ?',
+      args: [uid, id],
+    });
+    const already = (alreadyResult.rows as unknown[]).length > 0;
     if (action === 'like') {
       if (!already) {
-        db.prepare(
-          'INSERT INTO likes (user_id, content_id, created_at) VALUES (?, ?, datetime(\'now\'))'
-        ).run(uid, id);
-        db.prepare('UPDATE content SET like_count = like_count + 1 WHERE id = ?').run(id);
+        await db.execute({
+          sql: "INSERT INTO likes (user_id, content_id, created_at) VALUES (?, ?, datetime('now'))",
+          args: [uid, id],
+        });
+        await db.execute({
+          sql: 'UPDATE content SET like_count = like_count + 1 WHERE id = ?',
+          args: [id],
+        });
       }
       liked = true;
     } else {
       if (already) {
-        db.prepare('DELETE FROM likes WHERE user_id = ? AND content_id = ?').run(uid, id);
-        db.prepare('UPDATE content SET like_count = MAX(0, like_count - 1) WHERE id = ?').run(id);
+        await db.execute({
+          sql: 'DELETE FROM likes WHERE user_id = ? AND content_id = ?',
+          args: [uid, id],
+        });
+        await db.execute({
+          sql: 'UPDATE content SET like_count = MAX(0, like_count - 1) WHERE id = ?',
+          args: [id],
+        });
       }
       liked = false;
     }
   } else {
     // Anonymous: simple count increment/decrement (device dedup handled client-side).
     const delta = action === 'like' ? 1 : -1;
-    db.prepare(
-      'UPDATE content SET like_count = MAX(0, like_count + ?) WHERE id = ?'
-    ).run(delta, id);
+    await db.execute({
+      sql: 'UPDATE content SET like_count = MAX(0, like_count + ?) WHERE id = ?',
+      args: [delta, id],
+    });
   }
 
-  const row = db
-    .prepare(`SELECT like_count FROM content WHERE id = ?`)
-    .get(id) as unknown as { like_count: number };
+  const rowResult = await db.execute({
+    sql: 'SELECT like_count FROM content WHERE id = ?',
+    args: [id],
+  });
+  const row = (rowResult.rows as unknown as { like_count: number }[])[0];
 
   const resp: LikeResponse & { liked?: boolean } = {
     likeCount: row.like_count,

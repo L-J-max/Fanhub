@@ -7,7 +7,7 @@ export async function register() {
   if (process.env.NEXT_RUNTIME === 'nodejs') {
     try {
       const { ensureAdmin } = await import('./lib/auth');
-      ensureAdmin();
+      await ensureAdmin();
     } catch {
       /* best-effort; admin seeding must not crash boot */
     }

@@ -27,9 +27,11 @@ export async function POST(req: NextRequest) {
   }
 
   const db = getDb();
-  const row = db
-    .prepare('SELECT username, password_hash, role FROM users WHERE username = ?')
-    .get(username) as unknown as UserRow | undefined;
+  const rowResult = await db.execute({
+    sql: 'SELECT username, password_hash, role FROM users WHERE username = ?',
+    args: [username],
+  });
+  const row = (rowResult.rows as unknown as UserRow[])[0];
 
   if (!row || !verifyPassword(password, row.password_hash)) {
     return NextResponse.json({ error: '用户名或密码错误' }, { status: 401 });

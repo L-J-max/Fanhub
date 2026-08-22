@@ -1,18 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { nanoid } from 'nanoid';
+import { getDb } from '@/lib/db';
 import {
-  getDb,
-  AVATAR_DIR,
-} from '@/lib/db';
-import {
-  getUserFromRequest,
   ALLOWED_AVATAR_MIME,
   MAX_AVATAR_SIZE,
   saveAvatar,
-  resolveAvatarPath,
   avatarUrl,
+  getUserFromRequest,
 } from '@/lib/auth';
-import fs from 'node:fs';
+import { deleteBlobByUrl } from '@/lib/upload';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -69,27 +64,21 @@ export async function POST(req: NextRequest) {
   }
 
   const db = getDb();
-  // Remove the previous avatar file (if any) before writing the new one.
-  const prev = db
-    .prepare('SELECT avatar FROM users WHERE username = ?')
-    .get(user.username) as { avatar: string | null } | undefined;
+  // Remove the previous avatar (Blob URL) before writing the new one.
+  const prevResult = await db.execute({
+    sql: 'SELECT avatar FROM users WHERE username = ?',
+    args: [user.username],
+  });
+  const prev = (prevResult.rows as unknown as { avatar: string | null }[])[0];
   if (prev?.avatar) {
-    const oldPath = resolveAvatarPath(prev.avatar);
-    if (oldPath) {
-      try {
-        fs.unlinkSync(oldPath);
-      } catch {
-        /* already missing — ignore */
-      }
-    }
+    await deleteBlobByUrl(prev.avatar);
   }
 
-  const id = nanoid();
-  const stored = saveAvatar(id, ext, buffer);
-  db.prepare('UPDATE users SET avatar = ? WHERE username = ?').run(
-    stored,
-    user.username
-  );
+  const stored = await saveAvatar(buffer, ext);
+  await db.execute({
+    sql: 'UPDATE users SET avatar = ? WHERE username = ?',
+    args: [stored, user.username],
+  });
 
   return NextResponse.json({ ok: true, avatarUrl: avatarUrl(stored) });
 }

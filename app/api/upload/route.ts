@@ -7,7 +7,7 @@ import {
   getExtensionForMime,
   MAX_SIZE,
 } from '@/lib/validation';
-import { saveUploadFile } from '@/lib/upload';
+import { saveBlob } from '@/lib/upload';
 import { getUserFromRequest } from '@/lib/auth';
 import type { ContentType } from '@/lib/types';
 
@@ -98,25 +98,26 @@ export async function POST(req: NextRequest) {
       const mb = Math.round(MAX_SIZE[type] / (1024 * 1024));
       return NextResponse.json({ error: `文件超过 ${mb} MB 上限` }, { status: 400 });
     }
-    storedName = await saveUploadFile(id, ext, buffer);
+    storedName = await saveBlob(`uploads/${id}.${ext}`, buffer, normalizedMime);
     mime = normalizedMime;
     size = buffer.length;
   }
 
   const db = getDb();
-  db.prepare(
-    `INSERT INTO content (id, type, title, text_body, file_path, mime, size, like_count, user_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`
-  ).run(
-    id,
-    type,
-    title.trim(),
-    type === 'text' ? (textRaw as string) : null,
-    storedName,
-    mime,
-    size,
-    user.username
-  );
+  await db.execute({
+    sql: `INSERT INTO content (id, type, title, text_body, file_path, mime, size, like_count, user_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+    args: [
+      id,
+      type,
+      title.trim(),
+      type === 'text' ? (textRaw as string) : null,
+      storedName,
+      mime,
+      size,
+      user.username,
+    ],
+  });
 
   return NextResponse.json({ id, type, title: title.trim() }, { status: 201 });
 }

@@ -19,9 +19,11 @@ export default async function ContentDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const row = getDb().prepare('SELECT * FROM content WHERE id = ?').get(id) as
-    | unknown as ContentItem
-    | undefined;
+  const rowResult = await getDb().execute({
+    sql: 'SELECT * FROM content WHERE id = ?',
+    args: [id],
+  });
+  const row = (rowResult.rows as unknown as ContentItem[])[0];
 
   if (!row) notFound();
 
@@ -33,14 +35,16 @@ export default async function ContentDetailPage({
 
   let likedByMe = false;
   if (me) {
-    const liked = getDb()
-      .prepare('SELECT 1 FROM likes WHERE user_id = ? AND content_id = ?')
-      .get(me.username, id);
-    likedByMe = Boolean(liked);
+    const likedResult = await getDb().execute({
+      sql: 'SELECT 1 FROM likes WHERE user_id = ? AND content_id = ?',
+      args: [me.username, id],
+    });
+    likedByMe = (likedResult.rows as unknown[]).length > 0;
   }
 
+  // file_path now stores the full Blob URL for media items.
   const fileUrl =
-    row.type !== 'text' && row.file_path ? `/api/file/${row.id}` : null;
+    row.type !== 'text' && row.file_path ? row.file_path : null;
 
   return (
     <div className="space-y-6 animate-fade-in">
