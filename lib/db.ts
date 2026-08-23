@@ -1,4 +1,9 @@
-import { createClient, type Client } from '@libsql/client';
+import {
+  createClient,
+  type Client,
+  type InStatement,
+  type ResultSet,
+} from '@libsql/client';
 
 // ---------------------------------------------------------------------------
 // Database layer — Turso (libSQL) for Vercel-compatible, persistent storage.
@@ -29,7 +34,10 @@ function createClientInstance(): Client {
   return createClient({ url, authToken: token });
 }
 
-export function getDb(): Client {
+// Internal: cached raw libSQL client. Used by `ensureSchema()` and by the
+// schema-aware wrapper returned from `getDb()`. Kept private so that all
+// outside access goes through `getDb()`, which guarantees schema init.
+function getRawClient(): Client {
   if (!globalForDb.__fanHubClient) {
     globalForDb.__fanHubClient = createClientInstance();
   }
@@ -37,14 +45,16 @@ export function getDb(): Client {
 }
 
 // ---------------------------------------------------------------------------
-// Schema bootstrap. Idempotent — safe to call on every cold start.
+// Schema bootstrap. Idempotent — safe to call on every cold start. The result
+// is cached so the DDL runs at most once per process, and is retried on failure
+// (the cached promise is reset so a later call can recover).
 // ---------------------------------------------------------------------------
 let schemaReady: Promise<void> | null = null;
 
 export function ensureSchema(): Promise<void> {
   if (!schemaReady) {
     schemaReady = (async () => {
-      const db = getDb();
+      const db = getRawClient();
       await db.batch([
         `CREATE TABLE IF NOT EXISTS content (
           id          TEXT PRIMARY KEY,
@@ -97,4 +107,33 @@ export function ensureSchema(): Promise<void> {
     });
   }
   return schemaReady;
+}
+
+// ---------------------------------------------------------------------------
+// Schema-aware client. Every query (execute / batch) awaits `ensureSchema()`
+// FIRST, so the tables are guaranteed to exist before the first statement ever
+// reaches a brand-new (empty) Turso database.
+//
+// This centralizes the initialization guarantee: no route handler can forget to
+// call `ensureSchema()`, because the wrapper enforces it on every access. It is
+// the fix for "no such table: users / content / hero" on first deploy.
+// ---------------------------------------------------------------------------
+class SchemaReadyDb {
+  private client: Client = getRawClient();
+
+  private ready(): Promise<void> {
+    return ensureSchema();
+  }
+
+  execute(query: InStatement): Promise<ResultSet> {
+    return this.ready().then(() => this.client.execute(query));
+  }
+
+  batch(stmts: InStatement[], mode?: 'write' | 'read'): Promise<ResultSet[]> {
+    return this.ready().then(() => this.client.batch(stmts, mode));
+  }
+}
+
+export function getDb(): SchemaReadyDb {
+  return new SchemaReadyDb();
 }
