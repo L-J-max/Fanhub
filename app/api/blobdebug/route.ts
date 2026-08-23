@@ -1,34 +1,37 @@
 import { NextResponse } from 'next/server';
-import { nanoid } from 'nanoid';
-import { getDb } from '@/lib/db';
-import { getExtensionForMime } from '@/lib/validation';
-import { saveBlob } from '@/lib/upload';
+import { put } from '@vercel/blob';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
-  const out: any = { hasToken: !!process.env.BLOB_READ_WRITE_TOKEN };
+async function tryPut(label: string, storeId?: string) {
+  const token = process.env.BLOB_READ_WRITE_TOKEN || '';
   try {
-    const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
-    const buffer = Buffer.from(data, 'base64');
-    out.bufferLen = buffer.length;
-    const mime = 'image/png';
-    const ext = getExtensionForMime('image', mime);
-    out.ext = ext;
-    if (!ext) { out.step = 'ext-null'; return NextResponse.json(out); }
-    const id = nanoid();
-    const storedName = await saveBlob('uploads/' + id + '.' + ext, buffer, mime);
-    out.storedName = storedName;
-    const db = getDb();
-    await db.execute({
-      sql: 'INSERT INTO content (id,type,title,text_body,file_path,mime,size,like_count,user_id) VALUES (?,?,?,?,?,?,?,0,?)',
-      args: [id, 'image', 'debug', null, storedName, mime, buffer.length, 'debuguser'],
+    const b = await put('debug/probe3.txt', Buffer.from('probe3'), {
+      access: 'public', token, allowOverwrite: true, ...(storeId ? { storeId } : {}),
     });
-    out.step = 'ok'; out.id = id;
+    return { label, storeId: storeId || 'UNSET', ok: true, url: b.url };
   } catch (e: any) {
-    out.step = 'error'; out.name = e?.name; out.message = e?.message;
-    out.stack = (e?.stack || '').split('\n').slice(0, 6);
+    return { label, storeId: storeId || 'UNSET', ok: false, name: e?.name, message: e?.message };
+  }
+}
+
+export async function GET() {
+  const token = process.env.BLOB_READ_WRITE_TOKEN || '';
+  const out: any = {
+    tokenLen: token.length,
+    tokenPrefix: token.slice(0, 25),
+    tokenSuffix: token.slice(-8),
+    storeId1: process.env.BLOB_STORE_ID,
+    storeId2: process.env.BLOB_STORE_ID2_STORE_ID,
+    storeId3: process.env.BLOB_STORE_ID3_STORE_ID,
+  };
+  out.noStoreId = await tryPut('no-storeId');
+  if (process.env.BLOB_STORE_ID3_STORE_ID) {
+    out.withStoreId3 = await tryPut('with-storeId3', process.env.BLOB_STORE_ID3_STORE_ID);
+  }
+  if (process.env.BLOB_STORE_ID) {
+    out.withStoreId1 = await tryPut('with-storeId-old', process.env.BLOB_STORE_ID);
   }
   return NextResponse.json(out);
 }
