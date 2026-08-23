@@ -10,7 +10,8 @@ import type { PutCommandOptions } from '@vercel/blob';
 // `file_path` column now holds a full https URL rather than a local name).
 //
 // Env (set in Vercel + locally):
-//   BLOB_READ_WRITE_TOKEN  from `vercel blob token` / project dashboard
+//   BLOB_READ_WRITE_TOKEN       read/write credentials for the Blob store
+//   BLOB_STORE_ID3_STORE_ID     the public Fanhub-blob2 store id
 // ---------------------------------------------------------------------------
 
 /**
@@ -23,11 +24,19 @@ export async function saveBlob(
   data: Uint8Array,
   mime: string
 ): Promise<string> {
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  if (!token) {
+    throw new Error('BLOB_READ_WRITE_TOKEN is not set');
+  }
   const opts: PutCommandOptions = {
     access: 'public',
     contentType: mime,
     // Deterministic-ish name with allowed characters only (Blob is strict).
     allowOverwrite: true,
+    token,
+    // The project has multiple Blob stores connected; pin to the public
+    // Fanhub-blob2 store so the SDK does not resolve to another (private) one.
+    storeId: process.env.BLOB_STORE_ID3_STORE_ID,
   };
   const blob = await put(pathname, Buffer.from(data), opts);
   return blob.url;
@@ -41,7 +50,8 @@ export async function deleteBlobByUrl(url: string | null): Promise<void> {
   if (!url) return;
   try {
     const { del } = await import('@vercel/blob');
-    await del(url);
+    const token = process.env.BLOB_READ_WRITE_TOKEN;
+    await del(url, token ? { token } : undefined);
   } catch {
     /* remote object may already be gone; ignore */
   }
