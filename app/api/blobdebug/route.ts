@@ -1,28 +1,36 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { put } from '@vercel/blob';
+import { NextResponse } from 'next/server';
+import { getExtensionForMime } from '@/lib/validation';
+import { saveBlob } from '@/lib/upload';
+import { getDb } from '@/lib/db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function GET(req: NextRequest) {
-  const token = process.env.BLOB_READ_WRITE_TOKEN;
-  if (!token) {
-    return NextResponse.json({ step: 'no-token', hasToken: false });
-  }
+export async function GET() {
+  const out: any = { hasToken: !!process.env.BLOB_READ_WRITE_TOKEN };
   try {
-    const b = await put('debug/probe.txt', Buffer.from('probe'), {
-      access: 'public',
-      token,
-      allowOverwrite: true,
+    const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
+    const buffer = Buffer.from(data, 'base64');
+    out.bufferLen = buffer.length;
+    const mime = 'image/png';
+    const ext = getExtensionForMime('image', mime);
+    out.ext = ext;
+    if (!ext) { out.step = 'ext-null'; return NextResponse.json(out); }
+    const storedName = await saveBlob('uploads/' + Date.now() + '.' + ext, buffer, mime);
+    out.storedName = storedName;
+    const id = 'debug_' + Date.now();
+    const db = getDb();
+    await db.execute({
+      sql: 'INSERT INTO content (id,type,title,text_body,file_path,mime,size,like_count,user_id) VALUES (?,?,?,?,?,?,?,0,?)',
+      args: [id, 'image', 'debug', '', storedName, mime, buffer.length, 'debuguser'],
     });
-    return NextResponse.json({ step: 'ok', hasToken: true, url: b.url });
+    out.step = 'ok';
+    out.id = id;
   } catch (e: any) {
-    return NextResponse.json({
-      step: 'error',
-      hasToken: true,
-      name: e?.name,
-      message: e?.message,
-      stack: (e?.stack || '').split('\n').slice(0, 5),
-    });
+    out.step = 'error';
+    out.name = e?.name;
+    out.message = e?.message;
+    out.stack = (e?.stack || '').split('\n').slice(0, 6);
   }
+  return NextResponse.json(out);
 }
